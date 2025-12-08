@@ -1,207 +1,344 @@
+# app.py
 import streamlit as st
-import pandas as pd
-import plotly.express as px
-from transformers import pipeline
-from streamlit_option_menu import option_menu
-from streamlit_lottie import st_lottie
-import requests
-import time
+import os
+import json
+import re
+import PyPDF2
+import docx
+import google.generativeai as genai
+from google.generativeai.types import HarmCategory, HarmBlockThreshold
 
-# --- CẤU HÌNH TRANG (Phải đặt đầu tiên) ---
+# ============= CONFIG =============
 st.set_page_config(
-    page_title="Sentimind - AI Dashboard",
-    page_icon="🤖",
+    page_title="AI CV & JD ",
+    page_icon="📄",
     layout="wide",
-    initial_sidebar_state="expanded"
 )
 
-# --- CÁC HÀM HỖ TRỢ (HELPER FUNCTIONS) ---
+# ============= SETUP API =============
+# Lấy API Key từ biến môi trường hoặc nhập trực tiếp từ giao diện
+api_key = os.getenv("GEMINI_API_KEY")
 
-# 1. Load Model AI (Cache để không load lại nhiều lần)
-@st.cache_resource
-def load_sentiment_model():
-    # Sử dụng model DistilBERT được fine-tune cho phân tích cảm xúc
-    return pipeline("sentiment-analysis", model="distilbert-base-uncased-finetuned-sst-2-english")
+if not api_key:
+    # Nếu chưa có trong biến môi trường, hiện ô nhập ở sidebar
+    with st.sidebar:
+        st.divider()
+        api_key = st.text_input("Nhập Google Gemini API Key:", type="password")
+        st.caption("Bạn có thể lấy key tại [aistudio.google.com](https://aistudio.google.com/)")
 
-# 2. Load Animation Lottie từ URL
-def load_lottieurl(url: str):
-    r = requests.get(url)
-    if r.status_code != 200:
-        return None
-    return r.json()
+if api_key:
+    genai.configure(api_key=api_key)
 
-# --- KHỞI TẠO ---
-sentiment_pipeline = load_sentiment_model()
-lottie_ai_robot = load_lottieurl("https://assets5.lottiefiles.com/packages/lf20_qp1q7mct.json")
-lottie_analyzing = load_lottieurl("https://assets9.lottiefiles.com/packages/lf20_w51pcehl.json")
+# ============= UTIL FUNCTIONS =============
 
-# --- CSS TÙY CHỈNH (Để ẩn menu mặc định và footer cho chuyên nghiệp hơn) ---
-st.markdown("""
-<style>
-    #MainMenu {visibility: hidden;}
-    footer {visibility: hidden;}
-    .stApp { background-color: #f0f2f6; }
-</style>
-""", unsafe_allow_html=True)
+def extract_text_from_pdf(file):
+    reader = PyPDF2.PdfReader(file)
+    text = ""
+    for page in reader.pages:
+        extracted = page.extract_text()
+        if extracted:
+            text += extracted + "\n"
+    return text
 
-# --- SIDEBAR (THANH ĐIỀU HƯỚNG) ---
-with st.sidebar:
-    st.image("https://cdn-icons-png.flaticon.com/512/4712/4712035.png", width=80)
-    st.markdown("## **Sentimind AI**")
+def extract_text_from_docx(file):
+    doc = docx.Document(file)
+    return "\n".join([p.text for p in doc.paragraphs])
+
+def clean_text(txt: str) -> str:
+    if not txt:
+        return ""
+    txt = re.sub(r'\s+', ' ', txt)
+    return txt.strip()
+
+# ============= AI FUNCTIONS =============
+
+def get_gemini_model(system_instruction=None, json_mode=False):
+    """Cấu hình model Gemini"""
+    generation_config = {
+        "temperature": 0.7,
+        "top_p": 0.95,
+        "max_output_tokens": 8192,
+    }
     
-    # Menu điều hướng xịn xò
-    selected = option_menu(
-        menu_title="Main Menu",
-        options=["Dashboard", "Live Analysis", "Batch Processing", "About Team"],
-        icons=["speedometer2", "cpu", "cloud-upload", "people"],
-        menu_icon="cast",
-        default_index=0,
-        styles={
-            "container": {"padding": "5!important", "background-color": "#ffffff"},
-            "icon": {"color": "#4e73df", "font-size": "20px"}, 
-            "nav-link": {"font-size": "16px", "text-align": "left", "margin":"0px", "--hover-color": "#eee"},
-            "nav-link-selected": {"background-color": "#4e73df"},
-        }
+    # Bật chế độ JSON nếu cần
+    if json_mode:
+        generation_config["response_mime_type"] = "application/json"
+
+    # Cấu hình an toàn để tránh bị chặn nội dung vô lý
+    safety_settings = {
+        HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
+        HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
+        HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
+        HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
+    }
+
+    model = genai.GenerativeModel(
+        model_name="gemini-2.5-flash",
+        generation_config=generation_config,
+        system_instruction=system_instruction,
+        safety_settings=safety_settings
     )
-    st.info("Project 2 - Introduction to IT\n\n© 2025 Group Name")
+    return model
 
-# --- NỘI DUNG CHÍNH ---
+def analyze_cv_jd(cv_text: str, jd_text: str, language: str = "vi"):
+    if not api_key:
+        st.error("Vui lòng nhập Gemini API Key để tiếp tục.")
+        return None
 
-# TAB 1: DASHBOARD (Tổng quan)
-if selected == "Dashboard":
-    col1, col2 = st.columns([2, 1])
+    system_prompt = f"""
+    Bạn là chuyên gia tuyển dụng nhân sự (HR) có kinh nghiệm.
+    Nhiệm vụ: Phân tích sự phù hợp giữa CV ứng viên và Mô tả công việc (JD).
+    
+    Hãy trả về kết quả dưới dạng JSON (không dùng Markdown code block, chỉ trả về raw JSON) với cấu trúc sau:
+    {{
+      "match_score": int, // Thang điểm 0-100
+      "seniority": "Intern/Entry | Junior | Mid | Senior | Lead/Manager", // Đánh giá trình độ dựa trên CV
+      "summary_cv": "string", // Tóm tắt ngắn gọn CV (khoảng 2-3 câu)
+      "summary_jd": "string", // Tóm tắt yêu cầu cốt lõi của JD (khoảng 2-3 câu)
+      "strengths": ["..."], // Các điểm mạnh của ứng viên so với JD
+      "gaps": ["..."], // Các kỹ năng/kinh nghiệm còn thiếu so với JD
+      "recommended_keywords": ["..."], // Các từ khóa quan trọng trong JD mà CV đang thiếu
+      "bullet_improvements": [ // Gợi ý viết lại 3 điểm quan trọng nhất trong CV để khớp JD hơn
+          {{ "original": "...", "improved": "..." }}
+      ]
+    }}
+    
+    Ngôn ngữ phản hồi: {language} (Tiếng Việt hoặc English).
+    """
+
+    user_prompt = f"""
+    === CV CỦA ỨNG VIÊN ===
+    {cv_text}
+
+    === MÔ TẢ CÔNG VIỆC (JD) ===
+    {jd_text}
+    """
+
+    try:
+        # Gọi Gemini với chế độ JSON
+        model = get_gemini_model(system_instruction=system_prompt, json_mode=True)
+        response = model.generate_content(user_prompt)
+        
+        # Parse JSON
+        return json.loads(response.text)
+        
+    except Exception as e:
+        st.error(f"Lỗi khi gọi Gemini API: {str(e)}")
+        return None
+
+
+def rewrite_section(cv_text: str, language: str = "vi"):
+    if not api_key:
+        st.error("Vui lòng nhập API Key.")
+        return ""
+
+    system_prompt = f"Bạn là chuyên gia viết CV chuyên nghiệp. Hãy viết lại nội dung người dùng cung cấp sao cho hấp dẫn, chuyên nghiệp, dùng từ ngữ hành động (action verbs), ngắn gọn súc tích. Ngôn ngữ: {language}."
+    
+    prompt = f"""
+    Đoạn gốc cần viết lại:
+    "{cv_text}"
+    
+    Hãy viết lại đoạn trên hay hơn:
+    """
+
+    try:
+        model = get_gemini_model(system_instruction=system_prompt, json_mode=False)
+        response = model.generate_content(prompt)
+        return response.text.strip()
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+
+# ============= UI SECTIONS =============
+
+def render_header():
+    st.markdown("## 📄 AI Resume & Job Match Assistant (Gemini Powered)")
+    st.markdown(
+        "Giúp bạn **đánh giá mức độ phù hợp giữa CV và JD**, "
+        "phát hiện **khoảng trống kỹ năng** và **gợi ý chỉnh sửa** CV."
+    )
+    st.markdown("---")
+
+def render_inputs():
+    col1, col2 = st.columns(2)
+
     with col1:
-        st.title("📊 Business Insight Dashboard")
-        st.markdown("Chào mừng quay trở lại! Dưới đây là tổng quan về cảm xúc khách hàng trong tháng này.")
+        st.subheader("1️⃣ CV của bạn")
+        cv_mode = st.radio(
+            "Chọn cách nhập CV:",
+            ["Upload file", "Dán text"],
+            horizontal=True,
+        )
+
+        cv_text = ""
+        cv_file = None
+
+        if cv_mode == "Upload file":
+            cv_file = st.file_uploader(
+                "Upload CV (.pdf, .docx, .txt)",
+                type=["pdf", "docx", "txt"],
+                key="cv_file",
+            )
+            if cv_file is not None:
+                try:
+                    if cv_file.type == "application/pdf":
+                        cv_text = extract_text_from_pdf(cv_file)
+                    elif cv_file.type in [
+                        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                        "application/msword"
+                    ]:
+                        cv_text = extract_text_from_docx(cv_file)
+                    else:
+                        cv_text = cv_file.read().decode("utf-8", errors="ignore")
+                except Exception as e:
+                    st.error(f"Không đọc được file: {e}")
+        else:
+            cv_text = st.text_area("Dán nội dung CV của bạn tại đây", height=300)
+
     with col2:
-        st_lottie(lottie_analyzing, height=150, key="dashboard_anim")
+        st.subheader("2️⃣ Job Description (JD)")
+        jd_text = st.text_area(
+            "Dán JD / mô tả công việc",
+            height=360,
+            help="Copy JD từ website tuyển dụng hoặc mô tả do HR gửi."
+        )
+
+    return clean_text(cv_text), clean_text(jd_text)
+
+def render_overview(analysis_result):
+    if not analysis_result:
+        return
+
+    st.subheader("📊 Tổng quan mức độ phù hợp")
+
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("Match score", f"{analysis_result.get('match_score', 0)} / 100")
+    with col2:
+        st.metric("Cấp độ phù hợp", analysis_result.get("seniority", "N/A"))
+    with col3:
+        st.metric("Số điểm mạnh", len(analysis_result.get("strengths", [])))
+
+    with st.expander("Tóm tắt CV & JD"):
+        col_a, col_b = st.columns(2)
+        with col_a:
+            st.markdown("**Tóm tắt CV:**")
+            st.write(analysis_result.get("summary_cv", ""))
+        with col_b:
+            st.markdown("**Tóm tắt JD:**")
+            st.write(analysis_result.get("summary_jd", ""))
+
+def render_details_tabs(analysis_result):
+    if not analysis_result:
+        return
+
+    tab1, tab2, tab3, tab4 = st.tabs(
+        ["✅ Điểm mạnh", "⚠️ Khoảng trống", "🧩 Từ khóa gợi ý", "✏️ Ví dụ rewrite"]
+    )
+
+    with tab1:
+        st.markdown("### ✅ Điểm mạnh so với JD")
+        strengths = analysis_result.get("strengths", [])
+        if strengths:
+            for s in strengths:
+                st.markdown(f"- {s}")
+        else:
+            st.info("Chưa phát hiện điểm mạnh cụ thể.")
+
+    with tab2:
+        st.markdown("### ⚠️ Khoảng trống / thiếu so với JD")
+        gaps = analysis_result.get("gaps", [])
+        if gaps:
+            for g in gaps:
+                st.markdown(f"- {g}")
+        else:
+            st.success("Không thấy khoảng trống đáng kể.")
+
+    with tab3:
+        st.markdown("### 🧩 Từ khóa & kỹ năng nên thêm vào CV")
+        keywords = analysis_result.get("recommended_keywords", [])
+        if keywords:
+            st.write(", ".join(keywords))
+        else:
+            st.info("Không có gợi ý từ khóa thêm.")
+
+    with tab4:
+        st.markdown("### ✏️ Gợi ý rewrite các bullet/đoạn mô tả kinh nghiệm")
+        bullets = analysis_result.get("bullet_improvements", [])
+        if bullets:
+            for item in bullets:
+                with st.expander(f"📌 {item.get('original', '')[:60]}..."):
+                    st.markdown("**Bản gốc:**")
+                    st.write(item.get("original", ""))
+                    st.markdown("**Phiên bản cải thiện:**")
+                    st.write(item.get("improved", ""))
+        else:
+            st.info("AI chưa tạo ví dụ rewrite.")
+
+def render_custom_rewrite(language: str):
+    st.markdown("---")
+    st.subheader("✨ Rewrite 1 đoạn CV cụ thể")
+
+    text = st.text_area(
+        "Dán 1 đoạn/bullet trong CV mà bạn muốn AI viết lại:",
+        height=120,
+    )
+    if st.button("Rewrite đoạn này ✏️", use_container_width=True):
+        if not text.strip():
+            st.warning("Hãy nhập một đoạn text trước.")
+        else:
+            if not api_key:
+                st.error("Vui lòng nhập API Key ở sidebar trước.")
+            else:
+                with st.spinner("Đang rewrite..."):
+                    improved = rewrite_section(text, language=language)
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.markdown("**Bản gốc:**")
+                    st.write(text)
+                with col2:
+                    st.markdown("**Bản rewrite:**")
+                    st.write(improved)
+
+# ============= MAIN APP =============
+
+def main():
+    # Sidebar
+    with st.sidebar:
+        st.markdown("### ⚙️ Cài đặt")
+        language = st.selectbox(
+            "Ngôn ngữ output",
+            options=["vi", "en"],
+            format_func=lambda x: "Tiếng Việt" if x == "vi" else "English",
+        )
+        st.caption("App sử dụng **Google Gemini API** (gemini-1.5-flash) để phân tích CV & JD.")
+
+    # Header
+    render_header()
+
+    # Inputs
+    cv_text, jd_text = render_inputs()
 
     st.markdown("---")
-    
-    # KPIs (Thẻ số liệu)
-    kpi1, kpi2, kpi3, kpi4 = st.columns(4)
-    with kpi1:
-        st.metric(label="Tổng phản hồi", value="1,500", delta="120 review mới")
-    with kpi2:
-        st.metric(label="Tích cực (Positive)", value="1,100", delta="15%", delta_color="normal")
-    with kpi3:
-        st.metric(label="Tiêu cực (Negative)", value="400", delta="-5%", delta_color="inverse")
-    with kpi4:
-        st.metric(label="Độ tin cậy AI", value="98.5%", delta="Ổn định")
+    analyze_btn = st.button("🚀 Phân tích CV & JD", type="primary", use_container_width=True)
 
-    # Biểu đồ mẫu (Giả lập dữ liệu để Demo Dashboard)
-    st.subheader("📈 Xu hướng cảm xúc theo thời gian")
-    chart_data = pd.DataFrame({
-        'Ngày': ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'],
-        'Positive': [100, 120, 115, 130, 150, 180, 190],
-        'Negative': [20, 15, 25, 10, 20, 30, 25]
-    })
-    
-    # Vẽ biểu đồ Line chart
-    fig = px.line(chart_data, x='Ngày', y=['Positive', 'Negative'], 
-                  labels={'value': 'Số lượng review', 'variable': 'Loại cảm xúc'},
-                  color_discrete_map={"Positive": "#2ecc71", "Negative": "#e74c3c"})
-    st.plotly_chart(fig, use_container_width=True)
-
-# TAB 2: LIVE ANALYSIS (Demo trực tiếp)
-elif selected == "Live Analysis":
-    st.title("🧠 AI Phân Tích Trực Tiếp")
-    st.write("Nhập bất kỳ câu phản hồi nào (Tiếng Anh) để xem AI phân tích thời gian thực.")
-    
-    col_input, col_result = st.columns([1, 1])
-    
-    with col_input:
-        user_text = st.text_area("Nhập nội dung tại đây:", height=200, 
-                                 placeholder="Ví dụ: I absolutely love this product! The quality is amazing.")
-        analyze_btn = st.button("🚀 Phân tích ngay", type="primary")
-
-    with col_result:
-        if analyze_btn and user_text:
-            with st.spinner("AI đang suy nghĩ..."):
-                time.sleep(1) # Giả lập độ trễ một chút cho hiệu ứng
-                result = sentiment_pipeline(user_text)[0]
-                label = result['label']
-                score = result['score']
-                
-                # Hiển thị kết quả dựa trên nhãn
-                if label == 'POSITIVE':
-                    st.success(f"### Kết quả: TÍCH CỰC (Positive) 😊")
-                    st_lottie("https://assets10.lottiefiles.com/packages/lf20_5tjfcwda.json", height=150, key="happy")
-                else:
-                    st.error(f"### Kết quả: TIÊU CỰC (Negative) 😞")
-                    st_lottie("https://assets10.lottiefiles.com/packages/lf20_kcxmcc.json", height=150, key="sad")
-                
-                st.progress(score, text=f"Độ tin cậy của AI: {score:.4f}")
-        elif analyze_btn and not user_text:
-            st.warning("Vui lòng nhập nội dung trước khi bấm nút.")
+    if analyze_btn:
+        if not cv_text or not jd_text:
+            st.error("Vui lòng nhập **cả CV và JD** trước khi phân tích.")
         else:
-            st.info("Kết quả sẽ hiển thị tại đây...")
-            st_lottie(lottie_ai_robot, height=200, key="waiting_robot")
-
-# TAB 3: BATCH PROCESSING (Xử lý file)
-elif selected == "Batch Processing":
-    st.title("📂 Phân Tích Hàng Loạt")
-    st.write("Tải lên file Excel/CSV chứa danh sách feedback để phân tích tự động.")
-    
-    uploaded_file = st.file_uploader("Chọn file dữ liệu", type=['csv', 'xlsx'])
-    
-    if uploaded_file:
-        try:
-            # Đọc file
-            if uploaded_file.name.endswith('.csv'):
-                df = pd.read_csv(uploaded_file)
+            if not api_key:
+                st.error("⚠️ Chưa nhập API Key. Vui lòng nhập key vào thanh bên trái (Sidebar).")
             else:
-                df = pd.read_excel(uploaded_file)
-            
-            st.write("Dữ liệu gốc (5 dòng đầu):")
-            st.dataframe(df.head())
-            
-            # Chọn cột để phân tích
-            text_column = st.selectbox("Chọn cột chứa nội dung feedback:", df.columns)
-            
-            if st.button("⚡ Chạy AI cho toàn bộ file"):
-                with st.spinner("Đang xử lý dữ liệu lớn... Vui lòng đợi"):
-                    # Chạy model cho từng dòng (Lưu ý: Demo chỉ chạy 10 dòng đầu để nhanh)
-                    # Thực tế có thể bỏ .head(10) đi
-                    results = []
-                    for text in df[text_column].astype(str).head(20): 
-                        res = sentiment_pipeline(text[:512])[0] # Cắt chuỗi nếu quá dài
-                        results.append(res['label'])
-                    
-                    # Gán kết quả vào DataFrame (cho 20 dòng đầu demo)
-                    df_result = df.head(20).copy()
-                    df_result['AI Prediction'] = results
-                    
-                    st.success("Đã phân tích xong 20 dòng đầu tiên!")
-                    st.dataframe(df_result)
-                    
-                    # Vẽ biểu đồ tổng kết
-                    fig_pie = px.pie(df_result, names='AI Prediction', title='Tỷ lệ cảm xúc trong file', 
-                                     color_discrete_map={"POSITIVE": "#2ecc71", "NEGATIVE": "#e74c3c"})
-                    st.plotly_chart(fig_pie)
-                    
-        except Exception as e:
-            st.error(f"Có lỗi khi đọc file: {e}")
+                with st.spinner("Đang phân tích với Gemini AI..."):
+                    analysis_result = analyze_cv_jd(cv_text, jd_text, language=language)
 
-# TAB 4: ABOUT TEAM
-elif selected == "About Team":
-    st.title("👋 Giới thiệu Nhóm")
-    st.markdown("""
-    ### Project 2: Developing an AI Application
-    **Môn học:** Introduction to Information Technology  
-    **Giảng viên:** [Tên Giảng Viên]
-    
-    ---
-    ### Thành viên nhóm:
-    1. **Nguyễn Văn A** - *Team Leader & Backend Dev*
-    2. **Trần Thị B** - *Frontend Dev & UI/UX*
-    3. **Lê Văn C** - *Data Engineer*
-    4. **Phạm Thị D** - *Report & Presentation*
-    
-    ---
-    ### Công nghệ sử dụng:
-    * **Python & Streamlit:** Xây dựng ứng dụng Web.
-    * **Hugging Face Transformers:** Mô hình AI (DistilBERT).
-    * **Pandas & Plotly:** Xử lý và trực quan hóa dữ liệu.
-    """)
-    st.balloons() # Hiệu ứng bóng bay chào mừng
+                # Hiển thị kết quả
+                if analysis_result:
+                    render_overview(analysis_result)
+                    render_details_tabs(analysis_result)
+
+    # Khu rewrite custom
+    render_custom_rewrite(language)
+
+if __name__ == "__main__":
+    main()
