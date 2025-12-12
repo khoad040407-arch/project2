@@ -14,7 +14,10 @@ Run
 
 """
 
-
+def load_css(path="style.css"):
+    with open(path, "r", encoding="utf-8") as f:
+        st.markdown(f"<style>{f.read()}</style>", unsafe_allow_html=True)
+      
 from __future__ import annotations
 
 import json
@@ -25,6 +28,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
 import streamlit as st
+load_css()
 
 # File readers
 import PyPDF2
