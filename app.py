@@ -387,6 +387,123 @@ def sidebar_settings() -> Dict[str, Any]:
         "top_p": top_p,
         "max_output_tokens": max_output_tokens,
     }
+# =====================
+# Custom CSS Style B (AI/Tech)
+# =====================
+
+def inject_css():
+    st.markdown("""
+        <style>
+
+        /* GLOBAL FONT */
+        html, body, [class*="css"] {
+            font-family: 'Inter', sans-serif;
+        }
+
+        /* MAIN BACKGROUND */
+        .stApp {
+            background: radial-gradient(circle at 20% 30%, #1a1f4b 0%, #0e1129 50%, #070816 100%);
+            color: #ffffff;
+        }
+
+        /* SIDEBAR */
+        section[data-testid="stSidebar"] {
+            background: #0b0e23;
+            border-right: 1px solid rgba(255,255,255,0.08);
+        }
+
+        section[data-testid="stSidebar"] .css-1d391kg {
+            background: transparent !important;
+        }
+
+        /* CARDS / CONTAINERS */
+        .element-container, .stTabs [role="tablist"], .st-expander, .stTextInput {
+            background: rgba(255, 255, 255, 0.03) !important;
+            backdrop-filter: blur(12px);
+            border-radius: 16px !important;
+            border: 1px solid rgba(255, 255, 255, 0.08) !important;
+            padding: 10px;
+            box-shadow: 0 0 20px rgba(0, 255, 255, 0.05);
+        }
+
+        /* HEADERS */
+        h1, h2, h3, .stMarkdown h2, .stMarkdown h3 {
+            color: #e0e7ff !important;
+            text-shadow: 0 0 18px rgba(150, 130, 255, 0.4);
+        }
+
+        /* METRIC CARDS */
+        .stMetric {
+            background: rgba(255, 255, 255, 0.06);
+            border-radius: 16px;
+            padding: 18px;
+            border: 1px solid rgba(255, 255, 255, 0.08);
+        }
+
+        /* BUTTONS */
+        button[kind="primary"] {
+            background: linear-gradient(135deg, #4f46e5, #9333ea) !important;
+            color: white !important;
+            border-radius: 10px !important;
+            padding: 0.7rem 1.2rem !important;
+            border: none !important;
+            box-shadow: 0 0 20px rgba(147, 51, 234, 0.4);
+        }
+
+        button[kind="primary"]:hover {
+            box-shadow: 0 0 30px rgba(147, 51, 234, 0.7);
+            transform: scale(1.03);
+        }
+
+        /* NORMAL BUTTON */
+        .stButton>button {
+            background: rgba(255, 255, 255, 0.06);
+            border-radius: 10px;
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            color: white;
+        }
+
+        .stButton>button:hover {
+            background: rgba(255, 255, 255, 0.15);
+        }
+
+        /* TEXT AREAS */
+        textarea {
+            background: rgba(255,255,255,0.05) !important;
+            color: #dbeafe !important;
+            border-radius: 12px !important;
+            border: 1px solid rgba(255,255,255,0.08) !important;
+        }
+
+        /* FILE UPLOADER */
+        .uploadedFile {
+            color: white !important;
+        }
+
+        /* EXPANDERS */
+        .st-expander {
+            border-radius: 14px !important;
+            border: 1px solid rgba(255,255,255,0.06) !important;
+        }
+
+        /* TABS */
+        .stTabs [role="tab"] {
+            color: #c7d2fe !important;
+        }
+
+        .stTabs [aria-selected="true"] {
+            background: rgba(255,255,255,0.08) !important;
+            border-bottom: 2px solid #a78bfa !important;
+            border-radius: 10px 10px 0 0 !important;
+        }
+
+        /* FOOTER */
+        footer {
+            color: #64748b !important;
+        }
+
+        </style>
+    """, unsafe_allow_html=True)
 
 
 def render_header() -> None:
@@ -621,6 +738,7 @@ def render_footer():
 
 
 def main() -> None:
+    inject_css()
     init_session_state()
     settings = sidebar_settings()
 
