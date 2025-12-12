@@ -14,12 +14,6 @@ Run
 
 """
 
-def load_css(path: str = "style.css"):
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            st.markdown(f"<style>{f.read()}</style>", unsafe_allow_html=True)
-    except FileNotFoundError:
-        st.warning(f"CSS file not found: {path}")
 
       
 from __future__ import annotations
@@ -32,8 +26,6 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
 import streamlit as st
-import streamlit as st
-load_css("style.css")
 
 # File readers
 import PyPDF2
