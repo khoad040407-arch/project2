@@ -1,7 +1,7 @@
 body {
     background: linear-gradient(135deg, #0f0f3a, #1a237e, #4a148c);
     background-attachment: fixed;
-    color: white !important;
+    color: black !important;
 }
 
 .stMarkdown, .stTextInput, .stTextArea, .stFileUploader, .stSelectbox {
